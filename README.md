@@ -155,7 +155,8 @@ API_PREFIX=your_prefix                               // API前缀，设置后需
 CHATGPT_BASE_URL=https://chatgpt.com                 // ChatGPT网关地址，设置后会改变请求的网站，多个网关用逗号分隔
 HISTORY_DISABLED=true                                // 是否不保存聊天记录并返回 conversation_id，true为不保存且不返回
 PROXY_URL=your_first_proxy, your_second_proxy        // 代理url，多个代理用逗号分隔
-ARKOSE_TOKEN_URL=https://arkose.example.com/token    // 获取Arkose token的地址，上文有提供说明
+ARKOSE_TOKEN_URL=https://arkose.example.com/token    // 获取Arkose token的地址，上文有提供说明，如果填：https://api.capsolver.com/createTask，那么将使用CapSolver API获取Arkose Token
+CAPSOLVER_API_KEY=your_capsolver_api_key             // CapSolver API Key，如果使用CapSolver API获取Arkose Token，需要填写
 POW_DIFFICULTY=4                                     // 要解决的工作量证明难度，数值越大，计算时间越长，建议3或者4
 RETRY_TIMES=3                                        // 出错重试次数
 ```
