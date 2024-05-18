@@ -8,7 +8,8 @@ services:
     ports:
       - '5005:5005'
     environment:
-      - ARKOSE_TOKEN_URL=http://arkose:5006/token
+      - ARKOSE_TOKEN_URL=https://api.capsolver.com/createTask
+      - CAPSOLVER_API_KEY=YOUR_CAPSOLVER_API_KEY
 
   arkose:
     image: lanqian528/funcaptcha_solver:latest

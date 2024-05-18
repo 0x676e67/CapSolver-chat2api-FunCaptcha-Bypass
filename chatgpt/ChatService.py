@@ -1,5 +1,6 @@
 import json
 import random
+import time
 import types
 import uuid
 
@@ -14,7 +15,7 @@ from chatgpt.proofofWork import get_config, get_dpl, get_answer_token, get_requi
 from chatgpt.wssClient import ac2wss, set_wss
 from utils.Client import Client
 from utils.Logger import logger
-from utils.config import proxy_url_list, chatgpt_base_url_list, arkose_token_url_list, history_disabled, pow_difficulty
+from utils.config import proxy_url_list, chatgpt_base_url_list, arkose_token_url_list, history_disabled, pow_difficulty, capsolver_api_key
 
 
 class ChatService:
@@ -27,6 +28,7 @@ class ChatService:
         self.proxy_url = random.choice(proxy_url_list) if proxy_url_list else None
         self.host_url = random.choice(chatgpt_base_url_list) if chatgpt_base_url_list else "https://chatgpt.com"
         self.arkose_token_url = random.choice(arkose_token_url_list) if arkose_token_url_list else None
+        self.api_key = capsolver_api_key
 
         self.s = Client(proxy=self.proxy_url)
         self.ws = None
@@ -76,7 +78,8 @@ class ChatService:
             self.base_url = self.host_url + "/backend-anon"
 
         await get_dpl(self)
-        self.s.session.cookies.set("__Secure-next-auth.callback-url", "https%3A%2F%2Fchatgpt.com;", domain=self.host_url.split("://")[1], secure=True)
+        self.s.session.cookies.set("__Secure-next-auth.callback-url", "https%3A%2F%2Fchatgpt.com;",
+                                   domain=self.host_url.split("://")[1], secure=True)
 
     async def get_wss_url(self):
         url = f'{self.base_url}/register-websocket'
@@ -119,9 +122,11 @@ class ChatService:
                 if proofofwork_required:
                     proofofwork_diff = proofofwork.get("difficulty")
                     if proofofwork_diff.startswith("0" * (pow_difficulty + 1)):
-                        raise HTTPException(status_code=403, detail=f"Proof of work difficulty too high: {proofofwork_diff}")
+                        raise HTTPException(status_code=403,
+                                            detail=f"Proof of work difficulty too high: {proofofwork_diff}")
                     proofofwork_seed = proofofwork.get("seed")
-                    self.proof_token = await run_in_threadpool(get_answer_token, proofofwork_seed, proofofwork_diff, config)
+                    self.proof_token = await run_in_threadpool(get_answer_token, proofofwork_seed, proofofwork_diff,
+                                                               config)
 
                 arkose_required = arkose.get('required')
                 if arkose_required:
@@ -130,16 +135,55 @@ class ChatService:
                     arkose_dx = arkose.get("dx")
                     arkose_client = Client()
                     try:
-                        r2 = await arkose_client.post(
-                            url=self.arkose_token_url,
-                            json={"blob": arkose_dx},
-                            timeout=15
-                        )
-                        r2esp = r2.json()
-                        logger.info(f"arkose_token: {r2esp}")
-                        self.arkose_token = r2esp.get('token')
+                        # if url is https://api.capsolver.com/createTask
+                        if "capsolver" in self.arkose_token_url:
+                            r2 = await arkose_client.post(
+                                url=self.arkose_token_url,
+                                params={
+                                    "clientKey": self.api_key,
+                                    "task": {
+                                        "type": "FunCaptchaTaskProxyLess",
+                                        "websiteURL": "https://tcr9i.chat.openai.com",
+                                        "websitePublicKey": "35536E1E-65B4-4D96-9D97-6ADB7EFF8147",
+                                        "data": {
+                                            "blob": arkose_dx
+                                        }
+                                    }
+                                },
+                                timeout=15
+                            )
+
+                            r2esp = r2.json()
+                            task_id = r2esp.get("taskId")
+                            if not task_id:
+                                logger.info("Failed to create arkose token task:", r2esp.text)
+                                return
+                            logger.info(f"Got taskId: {task_id} / Getting result...")
+
+                            while True:
+                                time.sleep(1)  # delay
+                                payload = {"clientKey": self.api_key, "taskId": task_id}
+                                res = await arkose_client.post("https://api.capsolver.com/getTaskResult", json=payload)
+                                resp = res.json()
+                                status = resp.get("status")
+                                if status == "ready":
+                                    self.arkose_token = resp.get("solution", {}).get('token')
+                                if status == "failed" or resp.get("errorId"):
+                                    logger.warning("Solve failed! response:", res.text)
+
+                        else:
+                            r2 = await arkose_client.post(
+                                url=self.arkose_token_url,
+                                json={"blob": arkose_dx},
+                                timeout=15
+                            )
+                            r2esp = r2.json()
+                            logger.info(f"arkose_token: {r2esp}")
+                            self.arkose_token = r2esp.get('token')
+
                         if not self.arkose_token:
                             raise HTTPException(status_code=403, detail="Failed to get Arkose token")
+
                     except Exception:
                         raise HTTPException(status_code=403, detail="Failed to get Arkose token")
                     finally:
@@ -226,7 +270,8 @@ class ChatService:
                 raise HTTPException(status_code=e.status_code, detail=str(e))
             url = f'{self.base_url}/conversation'
             stream = self.data.get("stream", False)
-            r = await self.s.post_stream(url, headers=self.chat_headers, json=self.chat_request, timeout=10, stream=True)
+            r = await self.s.post_stream(url, headers=self.chat_headers, json=self.chat_request, timeout=10,
+                                         stream=True)
             if r.status_code != 200:
                 rtext = await r.atext()
                 if "application/json" == r.headers.get("Content-Type", ""):
@@ -243,7 +288,9 @@ class ChatService:
             if "text/event-stream" in content_type and stream:
                 return stream_response(self, r.aiter_lines(), self.target_model, self.max_tokens)
             elif "text/event-stream" in content_type and not stream:
-                return await format_not_stream_response(stream_response(self, r.aiter_lines(), self.target_model, self.max_tokens), self.prompt_tokens, self.max_tokens, self.target_model)
+                return await format_not_stream_response(
+                    stream_response(self, r.aiter_lines(), self.target_model, self.max_tokens), self.prompt_tokens,
+                    self.max_tokens, self.target_model)
             elif "application/json" in content_type:
                 rtext = await r.atext()
                 resp = json.loads(rtext)
@@ -258,7 +305,9 @@ class ChatService:
                     if stream and isinstance(wss_r, types.AsyncGeneratorType):
                         return stream_response(self, wss_r, self.target_model, self.max_tokens)
                     else:
-                        return await format_not_stream_response(stream_response(self, wss_r, self.target_model, self.max_tokens), self.prompt_tokens, self.max_tokens, self.target_model)
+                        return await format_not_stream_response(
+                            stream_response(self, wss_r, self.target_model, self.max_tokens), self.prompt_tokens,
+                            self.max_tokens, self.target_model)
                 finally:
                     if not isinstance(wss_r, types.AsyncGeneratorType):
                         await self.ws.close()
